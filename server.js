@@ -166,22 +166,33 @@ app.get('/api/listings', async (req, res) => {
       if (!inBand.length) return null;
       // Sort by mileage proximity so closest comps are first
       inBand.sort((a, b) =>
-        Math.abs(parseInt(a.listing_mileage) - subjectKm) -
-        Math.abs(parseInt(b.listing_mileage) - subjectKm)
+        Math.abs(getKm(a) - subjectKm) -
+        Math.abs(getKm(b) - subjectKm)
       );
-      const prices = inBand.map(l => parseFloat(l.listing_price));
-      // Use median of the 3 closest listings if available — more robust than mean
-      const closestPrices = prices.slice(0, 3);
+
+      // Prefer used listings for median — new car prices inflate the number
+      const usedOnly = inBand.filter(l => {
+        const t = (l.listing_type || '').toLowerCase();
+        return t === 'used' || t === 'certified';
+      });
+      // Fall back to all listings if fewer than 2 used
+      const forMedian = usedOnly.length >= 2 ? usedOnly : inBand;
+
+      const allPrices = inBand.map(l => parseFloat(l.listing_price));
+      const medianPrices = forMedian.slice(0, 3).map(l => parseFloat(l.listing_price));
+
       return {
-        avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
-        median: median(closestPrices),
-        low: Math.round(Math.min(...prices)),
-        high: Math.round(Math.max(...prices)),
+        avg: Math.round(allPrices.reduce((a, b) => a + b, 0) / allPrices.length),
+        median: median(medianPrices),
+        low: Math.round(Math.min(...allPrices)),
+        high: Math.round(Math.max(...allPrices)),
         count: inBand.length,
+        used_count: usedOnly.length,
         band: bandKm,
-        closest: inBand.slice(0, 3).map(l => ({
+        closest: forMedian.slice(0, 3).map(l => ({
           price: parseFloat(l.listing_price),
-          km: parseInt(l.listing_mileage),
+          km: getKm(l),
+          type: l.listing_type || '',
           name: [l.vehicle_year, l.vehicle_make, l.vehicle_model, l.vehicle_trim].filter(Boolean).join(' '),
           distance: l.distance || ''
         }))
@@ -288,6 +299,7 @@ app.get('/api/listings', async (req, res) => {
     trimData._filtered_low = bandResult ? bandResult.low : null;
     trimData._filtered_high = bandResult ? bandResult.high : null;
     trimData._filtered_count = bandResult ? bandResult.count : 0;
+    trimData._filtered_used_count = bandResult ? (bandResult.used_count || 0) : 0;
     trimData._band_label = bandLabel;
     trimData._closest_comps = bandResult ? bandResult.closest || [] : [];
     trimData._was_extrapolated = wasExtrapolated;
