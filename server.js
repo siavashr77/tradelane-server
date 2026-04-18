@@ -26,15 +26,32 @@ app.get('/api/marketvalue', async (req, res) => {
   }
 });
 
-// ── MARKET LISTINGS ───────────────────────────────────────────────────────────
+// ── MARKET LISTINGS — trim matched first, model fallback ─────────────────────
 app.get('/api/listings', async (req, res) => {
   const { vin, key, postal } = req.query;
   if (!vin || !key) return res.status(400).json({ error: 'Missing vin or key' });
   try {
-    const url = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=15&spec_vin=${vin}&spec_vin_match=model&postal=${postal || 'M6S3N5'}&radius=200&country=canada`;
-    const response = await fetch(url);
-    const data = await response.json();
-    res.json(data);
+    // First try trim-level match
+    const trimUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=15&spec_vin=${vin}&spec_vin_match=trim&postal=${postal || 'M6S3N5'}&radius=200&country=canada`;
+    const trimResp = await fetch(trimUrl);
+    const trimData = await trimResp.json();
+
+    const trimCount = (trimData.listings || []).length;
+
+    // If trim match returns fewer than 3 listings, fall back to model match
+    if (trimCount < 3) {
+      const modelUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=15&spec_vin=${vin}&spec_vin_match=model&postal=${postal || 'M6S3N5'}&radius=200&country=canada`;
+      const modelResp = await fetch(modelUrl);
+      const modelData = await modelResp.json();
+      // Flag which match level was used so the UI can show it
+      modelData._match_level = 'model';
+      modelData._trim_count = trimCount;
+      return res.json(modelData);
+    }
+
+    trimData._match_level = 'trim';
+    trimData._trim_count = trimCount;
+    res.json(trimData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
