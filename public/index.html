@@ -204,28 +204,42 @@
         <div class="rs">VinAudit low</div>
       </div>
       <div class="rc">
+        <div class="rl">ON Retail Average</div>
+        <div class="rv" id="rAvg">—</div>
+        <div class="rs">VinAudit avg (appraisal base)</div>
+      </div>
+      <div class="rc">
+        <div class="rl">Listing Median (±KM)</div>
+        <div class="rv" id="rListingMedian">—</div>
+        <div class="rs" id="rListingMedianSub">Closest comps</div>
+      </div>
+      <div class="rc">
         <div class="rl">ON Retail High</div>
         <div class="rv" id="rHigh">—</div>
         <div class="rs">VinAudit high</div>
       </div>
-      <div class="rc">
-        <div class="rl">ON Retail Average</div>
-        <div class="rv" id="rAvg">—</div>
-        <div class="rs">Appraisal base</div>
-      </div>
-      <div class="rc">
-        <div class="rl">National Average</div>
-        <div class="rv" id="rNational">—</div>
-        <div class="rs">For reference</div>
-      </div>
       <div class="rc hero">
         <div class="rc-inner hero-inner">
           <div>
-            <div class="rl">TradeLane Offer</div>
+            <div class="rl">TradeLane Offer (VinAudit Base)</div>
             <div class="rv" id="rOffer">—</div>
             <div class="rs">After all adjustments</div>
           </div>
           <div id="compareSmall"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Listing-based offer card — populated after listings load -->
+    <div id="listingOfferRow" class="hidden" style="margin-bottom:16px;">
+      <div style="background:#0B1F3A;border-radius:10px;padding:20px 20px;">
+        <div style="font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:rgba(255,255,255,0.4);font-family:'Sora',sans-serif;margin-bottom:6px;">Listing-Based Offer</div>
+        <div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap;">
+          <div>
+            <div style="font-family:'Sora',sans-serif;font-weight:800;font-size:32px;color:#F0A500;" id="rListingOffer">—</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px;">Median of closest comps + your markup</div>
+          </div>
+          <div id="closestCompsTable" style="flex:1;min-width:240px;"></div>
         </div>
       </div>
     </div>
@@ -268,103 +282,31 @@ function isUSBuilt(vin){return vin&&['1','4','5'].includes(vin[0]);}
 function getOntarioPrice(data){const on=(data.state_prices||[]).find(s=>s.state_key==='ON');if(on)return{avg:parseFloat(on.estimated_price||on.average_price||0),source:'Ontario'};return{avg:parseFloat(data.prices?.average||data.mean||0),source:'National'};}
 function getAvgKm(data){const v=parseFloat(data.mileage||data.adjustments?.mileage?.average||0);return v>0?v:120000;}
 
-// ── VEHICLE CATEGORY DETECTION ───────────────────────────────────────────────
-
-function isTruck(make, vehicle) {
-  const m = (make||'').toLowerCase();
-  const v = (vehicle||'').toLowerCase();
-  const truckMakes = ['ford','gmc','chevrolet','chevy','ram','dodge'];
-  const truckKeywords = ['f-150','f-250','f-350','silverado','sierra','ram 1500','ram 2500','tundra','tacoma','frontier','ranger','colorado','canyon','ridgeline','titan'];
-  return truckMakes.some(b=>m.includes(b)) && truckKeywords.some(k=>v.includes(k));
-}
-
-function isHighDemandSUV(make, vehicle) {
-  const v = (vehicle||'').toLowerCase();
-  // Popular SUVs/crossovers that command strong wholesale prices
-  const highDemand = ['rav4 prime','rav4prime','tundra hybrid','sienna','grand cherokee 4xe','wrangler','bronco','defender','4runner','sequoia','escalade','navigator','suburban','tahoe','yukon denali','range rover','land cruiser'];
-  return highDemand.some(k=>v.includes(k));
-}
-
-function isPluginHybrid(vehicle) {
-  const v = (vehicle||'').toLowerCase();
-  return v.includes('phev') || v.includes('plug-in') || v.includes('prime') || v.includes('4xe') || v.includes('hybrid') && (v.includes('rav4')||v.includes('escape')||v.includes('tucson')||v.includes('santa fe'));
-}
-
-function isTesla(make) {
-  return (make||'').toLowerCase().includes('tesla');
-}
-
-function isLuxuryEuropean(make) {
-  // Only brands that are genuinely hard to wholesale — high repair costs, limited buyer pool
-  const m = (make||'').toLowerCase();
-  return ['jaguar','maserati','alfa','bentley','rolls','land rover'].some(b=>m.includes(b));
-}
-
-function isLuxuryJapanese(make) {
-  const m = (make||'').toLowerCase();
-  return ['lexus','acura','infiniti','genesis'].some(b=>m.includes(b));
-}
-
-// ── MARKUP REDUCTION FACTORS ──────────────────────────────────────────────────
-// Standard markup chart assumes average retail-to-wholesale spread
-// These factors REDUCE the markup for vehicles with stronger wholesale demand
-function getMarkupFactor(make, vehicle) {
-  if(isTesla(make)) return 0.70;           // Tesla — wholesale tracks retail closely, reduce markup 30%
-  if(isHighDemandSUV(make, vehicle)) return 0.75;  // High demand SUVs — reduce markup 25%
-  if(isTruck(make, vehicle)) return 0.80;  // Trucks — reduce markup 20%
-  if(isLuxuryEuropean(make)) return 1.10;  // Luxury European — harder to wholesale, increase markup 10%
-  return 1.00;                             // All others — standard markup
-}
-
-// ── HIGH DEMAND PREMIUM ───────────────────────────────────────────────────────
-// Some vehicles have supply/demand premiums the retail average doesn't capture
-function getHighDemandPremium(make, vehicle, retailBase) {
-  if(isHighDemandSUV(make, vehicle) && isPluginHybrid(vehicle)) return Math.round(retailBase * 0.05); // PHEV premium 5%
-  if(isHighDemandSUV(make, vehicle)) return Math.round(retailBase * 0.03); // High demand SUV 3%
-  if(isTesla(make)) return Math.round(retailBase * 0.04); // Tesla premium 4%
-  return 0;
-}
-
 function calcOffer({retail,retailSource,mileage,make,vehicle,vin,accident,color,vinAuditAvgKm}){
   const steps=[];let val=retail;
 
-  // 1. Markup deduction — adjusted by vehicle category
-  const baseMarkup=getMarkup(retail);
-  const markupFactor=getMarkupFactor(make,vehicle);
-  const mu=Math.round(baseMarkup*markupFactor);
+  // 1. Standard markup deduction (your chart)
+  const mu=getMarkup(retail);
   val-=mu;
-  const categoryNote = markupFactor < 1
-    ? `${isTesla(make)?'Tesla':isHighDemandSUV(make,vehicle)?'High demand SUV':'Truck'} — markup reduced to ${Math.round(markupFactor*100)}% of standard`
-    : markupFactor > 1 ? `Luxury European — markup increased to ${Math.round(markupFactor*100)}% of standard` : 'Standard markup';
-  steps.push({name:'1. Markup',adj:`-${fmt(mu)}`,cls:'deduct',note:`${retailSource} ${fmt(retail)} → base ${fmt(val)} · ${categoryNote}`});
+  steps.push({name:'1. Markup',adj:`-${fmt(mu)}`,cls:'deduct',note:`${retailSource} ${fmt(retail)} → base ${fmt(val)}`});
 
-  // Note: VinAudit retail values can vary between API calls by 3-8% due to rolling
-  // sales data updates. The offer reflects today's data pull.
-
-  // 2. High demand premium
-  const premium=getHighDemandPremium(make,vehicle,retail);
-  if(premium>0){
-    val+=premium;
-    steps.push({name:'2. Demand Premium',adj:`+${fmt(premium)}`,cls:'pos',note:`${isTesla(make)?'Tesla market premium':isPluginHybrid(vehicle)?'PHEV supply premium':'High demand vehicle premium'}`});
-  }
-
-  // 3. KM adjustment
+  // 2. KM adjustment
   const rate=kmRate(make);const inputKm=parseFloat(mileage)||0;const delta=inputKm-vinAuditAvgKm;
-  if(Math.abs(delta)>500){const adj=Math.round(Math.abs(delta)*rate);const add=delta<0;val+=add?adj:-adj;steps.push({name:'3. KM',adj:`${add?'+':'-'}${fmt(adj)}`,cls:add?'pos':'deduct',note:`${inputKm.toLocaleString()} km vs ${Math.round(vinAuditAvgKm).toLocaleString()} avg · ${brandLabel(make)}`});}
-  else steps.push({name:'3. KM',adj:'$0',cls:'neu',note:`${inputKm.toLocaleString()} km near avg`});
+  if(Math.abs(delta)>500){const adj=Math.round(Math.abs(delta)*rate);const add=delta<0;val+=add?adj:-adj;steps.push({name:'2. KM',adj:`${add?'+':'-'}${fmt(adj)}`,cls:add?'pos':'deduct',note:`${inputKm.toLocaleString()} km vs ${Math.round(vinAuditAvgKm).toLocaleString()} avg · ${brandLabel(make)}`});}
+  else steps.push({name:'2. KM',adj:'$0',cls:'neu',note:`${inputKm.toLocaleString()} km near avg`});
 
-  // 4. Accident history
+  // 3. Accident history
   const accD=accDeduct(accident);const accAmt=parseFloat(accident)||0;
-  if(accD>0){val-=accD;steps.push({name:'4. Accident',adj:`-${fmt(accD)}`,cls:'deduct',note:`Claim ${fmt(accAmt)} → 1/3 rule`});}
-  else steps.push({name:'4. Accident',adj:'$0',cls:'neu',note:'Clean — no deduction'});
+  if(accD>0){val-=accD;steps.push({name:'3. Accident',adj:`-${fmt(accD)}`,cls:'deduct',note:`Claim ${fmt(accAmt)} → 1/3 rule`});}
+  else steps.push({name:'3. Accident',adj:'$0',cls:'neu',note:'Clean — no deduction'});
 
-  // 5. Color adjustment
+  // 4. Color adjustment
   const colAdj=color==='other'?Math.round(val*0.03):0;
-  if(colAdj>0){val-=colAdj;steps.push({name:'5. Color',adj:`-${fmt(colAdj)}`,cls:'deduct',note:'Non-neutral −3%'});}
-  else steps.push({name:'5. Color',adj:'$0',cls:'neu',note:'Neutral — no deduction'});
+  if(colAdj>0){val-=colAdj;steps.push({name:'4. Color',adj:`-${fmt(colAdj)}`,cls:'deduct',note:'Non-neutral −3%'});}
+  else steps.push({name:'4. Color',adj:'$0',cls:'neu',note:'Neutral — no deduction'});
 
-  // 6. US Built note
-  if(isUSBuilt(vin))steps.push({name:'6. US-Built',adj:'Note',cls:'neu',note:`VIN starts "${vin[0]}" — export potential`});
+  // 5. US Built note
+  if(isUSBuilt(vin))steps.push({name:'5. US-Built',adj:'Note',cls:'neu',note:`VIN starts "${vin[0]}" — export potential`});
 
   return{offer:Math.max(0,Math.round(val)),steps};
 }
@@ -508,6 +450,8 @@ function renderListings(data){
   const filteredLow = data?._filtered_low;
   const filteredHigh = data?._filtered_high;
   const vinPrefix = data?._vin_prefix_used || '';
+  const usedRadius = data?._used_radius || 200;
+  const radiusNote = data?._radius_note || null;
 
   const vinBadgeColor = vinMatch.includes('1-8') ? '#DCFCE7' : vinMatch.includes('1-5') ? '#EFF6FF' : vinMatch.includes('1-3') ? '#FEF3C7' : '#FEE2E2';
   const vinBadgeText = vinMatch.includes('1-8') ? '#16A34A' : vinMatch.includes('1-5') ? '#1355C1' : vinMatch.includes('1-3') ? '#92400E' : '#DC2626';
@@ -515,6 +459,67 @@ function renderListings(data){
 
   const bandLabel = data?._band_label || '';
   const filteredCount = data?._filtered_count || 0;
+  const filteredMedian = data?._filtered_median;
+  const closestComps = data?._closest_comps || [];
+
+  // Populate listing median in result grid
+  if (filteredMedian) {
+    document.getElementById('rListingMedian').textContent = fmt(filteredMedian);
+    document.getElementById('rListingMedianSub').textContent = `Median of ${Math.min(3,filteredCount)} closest`;
+  } else {
+    document.getElementById('rListingMedian').textContent = '—';
+    document.getElementById('rListingMedianSub').textContent = 'No close comps';
+  }
+
+  // Calculate listing-based offer using median as retail base
+  if (filteredMedian && filteredMedian > 0) {
+    // Re-run appraisal logic using listing median as the retail base
+    const MARKUP_LB=[[14000,4000],[15000,5000],[30000,6000],[40000,6500],[50000,7000],[60000,8000],[70000,9000],[85000,10000],[110000,12000],[150000,15000],[Infinity,null]];
+    function getMarkupLB(p){for(const[max,amt]of MARKUP_LB)if(p<=max)return amt!==null?amt:p*0.10;return p*0.10;}
+    const listingMu = getMarkupLB(filteredMedian);
+    const kmRateVal = window._lastKmRate || 0.10;
+    const kmDelta = (window._lastMileage||0) - (window._lastVinAuditAvgKm||120000);
+    let listingOffer = filteredMedian - listingMu;
+    if (Math.abs(kmDelta) > 500) {
+      const kmAdj = Math.round(Math.abs(kmDelta) * kmRateVal);
+      listingOffer += kmDelta < 0 ? kmAdj : -kmAdj;
+    }
+    listingOffer = Math.max(0, Math.round(listingOffer));
+
+    document.getElementById('rListingOffer').textContent = fmt(listingOffer);
+
+    // Compare the two offers
+    const vinauditOffer = window._lastOffer || 0;
+    const diff = listingOffer - vinauditOffer;
+    const compHtml = diff === 0
+      ? '<span style="color:#4ade80;">✓ Both methods agree</span>'
+      : `Listing-based: <strong style="color:#F0A500;">${fmt(listingOffer)}</strong><br>
+         VinAudit-based: <strong>${fmt(vinauditOffer)}</strong><br>
+         <span style="color:${Math.abs(diff)>3000?'#f87171':'#4ade80'};">Difference: ${diff>0?'+':''}${fmt(diff)}</span>
+         ${Math.abs(diff)>3000?'<br><span style="color:#fde68a;font-size:12px;">⚠ Large gap — review comps carefully</span>':''}`;
+
+    document.getElementById('closestCompsTable').innerHTML = compHtml;
+    document.getElementById('listingOfferRow').classList.remove('hidden');
+
+    // Show closest comps as a mini table
+    if (closestComps.length > 0) {
+      const compsHtml = closestComps.map(c =>
+        `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;">
+          <span style="color:rgba(255,255,255,0.7);">${c.name||'Similar vehicle'} · ${(c.km||0).toLocaleString()} km ${c.distance?'· '+c.distance:''}</span>
+          <span style="font-family:'Sora',sans-serif;font-weight:700;color:white;">${fmt(c.price)}</span>
+        </div>`
+      ).join('');
+      document.getElementById('closestCompsTable').innerHTML = `
+        <div style="width:100%;">
+          <div style="font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.4);margin-bottom:6px;font-family:'Sora',sans-serif;">Closest Comparables Used</div>
+          ${compsHtml}
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:space-between;font-size:12px;">
+            <span style="color:rgba(255,255,255,0.5);">VinAudit-based: ${fmt(vinauditOffer)}</span>
+            <span style="color:${Math.abs(diff)>3000?'#f87171':'#4ade80'};">Diff: ${diff>0?'+':''}${fmt(diff)}</span>
+          </div>
+        </div>`;
+    }
+  }
   const filteredAvgHtml = filteredAvg ? `
     <div style="background:#F4F7FC;border:1px solid #D8E0F0;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
@@ -539,6 +544,7 @@ function renderListings(data){
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
       <span style="background:${vinBadgeColor};color:${vinBadgeText};font-family:'Sora',sans-serif;font-weight:600;font-size:11px;padding:3px 10px;border-radius:4px;">${vinIcon} VIN filter: ${vinMatch}</span>
       <span style="background:${apiMatch==='trim'?'#DCFCE7':'#FEF3C7'};color:${apiMatch==='trim'?'#16A34A':'#92400E'};font-family:'Sora',sans-serif;font-weight:600;font-size:11px;padding:3px 10px;border-radius:4px;">${apiMatch==='trim'?'✓':'⚠'} API: ${apiMatch}-matched</span>
+      ${usedRadius > 200 ? `<span style="background:#FEE2E2;color:#DC2626;font-family:'Sora',sans-serif;font-weight:600;font-size:11px;padding:3px 10px;border-radius:4px;">⚠ Expanded to ${usedRadius}km — limited local supply</span>` : `<span style="background:#DCFCE7;color:#16A34A;font-family:'Sora',sans-serif;font-weight:600;font-size:11px;padding:3px 10px;border-radius:4px;">📍 Within ${usedRadius}km</span>`}
     </div>`;
 
   area.innerHTML=matchBadge+filteredAvgHtml+summary+`<div class="listings-stack">${cards}</div><p style="color:var(--mid);font-size:12px;margin-top:12px;">${list.length} of ${data?.pagination?.query_total||list.length} total within 200km</p>`;
@@ -607,6 +613,11 @@ async function runAppraisal(){
 
     const vehicleName=[year,make,model,trim].filter(Boolean).join(' ');
     const{offer,steps}=calcOffer({retail:base,retailSource,mileage,make,vehicle:vehicleName,vin,accident,color,vinAuditAvgKm});
+    // Store for listing-based offer calculation
+    window._lastOffer=offer;window._lastMileage=mileage;window._lastVinAuditAvgKm=vinAuditAvgKm;window._lastKmRate=kmRate(make);
+    document.getElementById('rListingMedian').textContent='…';
+    document.getElementById('rListingMedianSub').textContent='Loading comps';
+    document.getElementById('listingOfferRow').classList.add('hidden');
     document.getElementById('rOffer').textContent=fmt(offer);
     renderBreakdown(steps);
     renderCompare(offer,manual);
