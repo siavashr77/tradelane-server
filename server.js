@@ -41,21 +41,41 @@ app.get('/api/listings', async (req, res) => {
   if (!vin || !key) return res.status(400).json({ error: 'Missing vin or key' });
 
   try {
-    // Fetch trim-matched listings first, fall back to model
-    const trimUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=50&spec_vin=${vin}&spec_vin_match=trim&postal=${postal || 'M6S3N5'}&radius=200&country=canada`;
-    const trimResp = await fetch(trimUrl);
-    const trimData = await trimResp.json();
-    let listings = trimData.listings || [];
+    // Radius expansion — try progressively wider searches until we find listings
+    const radii = [200, 500, 1000, 2000];
+    let listings = [];
     let apiMatchLevel = 'trim';
+    let usedRadius = 200;
+    let trimData = {};
 
-    if (listings.length < 3) {
-      const modelUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=50&spec_vin=${vin}&spec_vin_match=model&postal=${postal || 'M6S3N5'}&radius=200&country=canada`;
+    for (const radius of radii) {
+      // Try trim match first
+      const trimUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=50&spec_vin=${vin}&spec_vin_match=trim&postal=${postal || 'M6S3N5'}&radius=${radius}&country=canada`;
+      const trimResp = await fetch(trimUrl);
+      trimData = await trimResp.json();
+      listings = trimData.listings || [];
+      apiMatchLevel = 'trim';
+      usedRadius = radius;
+
+      if (listings.length >= 3) break;
+
+      // Fall back to model match at same radius
+      const modelUrl = `https://marketlistings.vinaudit.com/v1/listings?key=${key}&format=json&listing_status=active&page_size=50&spec_vin=${vin}&spec_vin_match=model&postal=${postal || 'M6S3N5'}&radius=${radius}&country=canada`;
       const modelResp = await fetch(modelUrl);
       const modelData = await modelResp.json();
-      listings = modelData.listings || [];
-      apiMatchLevel = 'model';
-      trimData.pagination = modelData.pagination;
+      if ((modelData.listings || []).length > listings.length) {
+        listings = modelData.listings || [];
+        apiMatchLevel = 'model';
+        trimData.pagination = modelData.pagination;
+      }
+
+      if (listings.length >= 3) break;
     }
+
+    // No US fallback — US pricing not relevant for Canadian wholesale
+
+    trimData._used_radius = usedRadius;
+    trimData._radius_note = usedRadius > 200 ? `Expanded to ${usedRadius}km — limited local supply` : null;
 
     // Deduplicate by VIN
     const seen = new Set();
@@ -107,11 +127,16 @@ app.get('/api/listings', async (req, res) => {
     const subjectKm = parseInt(req.query.mileage) || 0;
 
     function getListingsWithPriceAndKm(list) {
+      // Include listings that have a valid price — km can be 0/missing (handled in banding)
       return list.filter(l => {
         const price = parseFloat(l.listing_price);
-        const km = parseInt(l.listing_mileage);
-        return price > 5000 && km > 0;
+        return price > 5000;
       });
+    }
+    
+    function getKm(listing) {
+      const km = parseInt(listing.listing_mileage);
+      return isNaN(km) ? null : km;
     }
 
     // KM rates by brand for extrapolation (mirrors frontend logic)
@@ -124,19 +149,42 @@ app.get('/api/listings', async (req, res) => {
       return 0.10;
     }
 
+    function median(arr) {
+      if (!arr.length) return null;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 !== 0
+        ? sorted[mid]
+        : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+    }
+
     function calcBandedAvg(list, subjectKm, bandKm) {
       const inBand = list.filter(l => {
-        const km = parseInt(l.listing_mileage);
-        return Math.abs(km - subjectKm) <= bandKm;
+        const km = getKm(l);
+        return km !== null && Math.abs(km - subjectKm) <= bandKm;
       });
       if (!inBand.length) return null;
+      // Sort by mileage proximity so closest comps are first
+      inBand.sort((a, b) =>
+        Math.abs(parseInt(a.listing_mileage) - subjectKm) -
+        Math.abs(parseInt(b.listing_mileage) - subjectKm)
+      );
       const prices = inBand.map(l => parseFloat(l.listing_price));
+      // Use median of the 3 closest listings if available — more robust than mean
+      const closestPrices = prices.slice(0, 3);
       return {
         avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
+        median: median(closestPrices),
         low: Math.round(Math.min(...prices)),
         high: Math.round(Math.max(...prices)),
         count: inBand.length,
-        band: bandKm
+        band: bandKm,
+        closest: inBand.slice(0, 3).map(l => ({
+          price: parseFloat(l.listing_price),
+          km: parseInt(l.listing_mileage),
+          name: [l.vehicle_year, l.vehicle_make, l.vehicle_model, l.vehicle_trim].filter(Boolean).join(' '),
+          distance: l.distance || ''
+        }))
       };
     }
 
@@ -145,13 +193,16 @@ app.get('/api/listings', async (req, res) => {
       if (!list.length) return null;
       const rate = getKmRateForMake(make);
       // Sort by mileage proximity to subject vehicle
-      const sorted = [...list].sort((a, b) => {
-        return Math.abs(parseInt(a.listing_mileage) - subjectKm) - Math.abs(parseInt(b.listing_mileage) - subjectKm);
+      // Only extrapolate from listings that have mileage data
+      const withKm = list.filter(l => getKm(l) !== null);
+      if (!withKm.length) return null;
+      const sorted = [...withKm].sort((a, b) => {
+        return Math.abs(getKm(a) - subjectKm) - Math.abs(getKm(b) - subjectKm);
       });
       // Use up to 3 nearest by mileage, extrapolate each, then average
       const nearest = sorted.slice(0, 3);
       const extrapolated = nearest.map(l => {
-        const listKm = parseInt(l.listing_mileage);
+        const listKm = getKm(l);
         const listPrice = parseFloat(l.listing_price);
         const kmDiff = subjectKm - listKm; // negative = subject has fewer km = worth more
         const adjustment = Math.round(kmDiff * rate * -1); // flip sign: fewer km = add value
@@ -230,11 +281,15 @@ app.get('/api/listings', async (req, res) => {
     trimData._vin_prefix_used = prefix8;
     trimData._total_before_filter = listings.length;
     trimData._total_after_filter = filtered.length;
+    // Debug: log what we found
+    console.log(`Listings: total=${listings.length} filtered=${filtered.length} validWithKm=${filtered.filter(l=>getKm&&parseInt(l.listing_mileage)>0).length} subjectKm=${subjectKm} bandResult=${bandResult?bandResult.count:'null'}`);
     trimData._filtered_avg = bandResult ? bandResult.avg : null;
+    trimData._filtered_median = bandResult ? bandResult.median : null;
     trimData._filtered_low = bandResult ? bandResult.low : null;
     trimData._filtered_high = bandResult ? bandResult.high : null;
     trimData._filtered_count = bandResult ? bandResult.count : 0;
     trimData._band_label = bandLabel;
+    trimData._closest_comps = bandResult ? bandResult.closest || [] : [];
     trimData._was_extrapolated = wasExtrapolated;
 
     res.json(trimData);
