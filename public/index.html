@@ -463,12 +463,14 @@ function renderListings(data){
   const closestComps = data?._closest_comps || [];
 
   // Populate listing median in result grid
+  const elM = document.getElementById('rListingMedian');
+  const elMS = document.getElementById('rListingMedianSub');
   if (filteredMedian) {
-    document.getElementById('rListingMedian').textContent = fmt(filteredMedian);
-    document.getElementById('rListingMedianSub').textContent = `Median of ${Math.min(3,filteredCount)} closest`;
+    if(elM) elM.textContent = fmt(filteredMedian);
+    if(elMS) elMS.textContent = `Median of ${Math.min(3,filteredCount)} closest`;
   } else {
-    document.getElementById('rListingMedian').textContent = '—';
-    document.getElementById('rListingMedianSub').textContent = 'No close comps';
+    if(elM) elM.textContent = '—';
+    if(elMS) elMS.textContent = 'No close comps';
   }
 
   // Calculate listing-based offer using median as retail base
@@ -486,7 +488,7 @@ function renderListings(data){
     }
     listingOffer = Math.max(0, Math.round(listingOffer));
 
-    document.getElementById('rListingOffer').textContent = fmt(listingOffer);
+    const elLO = document.getElementById('rListingOffer'); if(elLO) elLO.textContent = fmt(listingOffer);
 
     // Compare the two offers
     const vinauditOffer = window._lastOffer || 0;
@@ -499,7 +501,7 @@ function renderListings(data){
          ${Math.abs(diff)>3000?'<br><span style="color:#fde68a;font-size:12px;">⚠ Large gap — review comps carefully</span>':''}`;
 
     document.getElementById('closestCompsTable').innerHTML = compHtml;
-    document.getElementById('listingOfferRow').classList.remove('hidden');
+    const elRow = document.getElementById('listingOfferRow'); if(elRow) elRow.classList.remove('hidden');
 
     // Show closest comps as a mini table
     if (closestComps.length > 0) {
@@ -609,15 +611,18 @@ async function runAppraisal(){
     document.getElementById('rLow').textContent=fmt(Math.round(base-stdev));
     document.getElementById('rAvg').textContent=fmt(base);
     document.getElementById('rHigh').textContent=fmt(Math.round(base+stdev));
-    document.getElementById('rNational').textContent=fmt(nationalAvg);
+    // rNational removed from layout — national avg shown in flags instead
 
     const vehicleName=[year,make,model,trim].filter(Boolean).join(' ');
     const{offer,steps}=calcOffer({retail:base,retailSource,mileage,make,vehicle:vehicleName,vin,accident,color,vinAuditAvgKm});
     // Store for listing-based offer calculation
     window._lastOffer=offer;window._lastMileage=mileage;window._lastVinAuditAvgKm=vinAuditAvgKm;window._lastKmRate=kmRate(make);
-    document.getElementById('rListingMedian').textContent='…';
-    document.getElementById('rListingMedianSub').textContent='Loading comps';
-    document.getElementById('listingOfferRow').classList.add('hidden');
+    const elLM = document.getElementById('rListingMedian');
+    const elLMS = document.getElementById('rListingMedianSub');
+    const elLOR = document.getElementById('listingOfferRow');
+    if(elLM) elLM.textContent='…';
+    if(elLMS) elLMS.textContent='Loading comps';
+    if(elLOR) elLOR.classList.add('hidden');
     document.getElementById('rOffer').textContent=fmt(offer);
     renderBreakdown(steps);
     renderCompare(offer,manual);
