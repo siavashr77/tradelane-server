@@ -102,28 +102,140 @@ app.get('/api/listings', async (req, res) => {
       vinMatchLevel = 'none (insufficient VIN matches)';
     }
 
-    // Calculate filtered market average from listing prices
-    const validPrices = filtered
-      .filter(l => parseFloat(l.listing_price) > 5000)
-      .map(l => parseFloat(l.listing_price));
+    // ── MILEAGE-BANDED AVERAGING ─────────────────────────────────────────────
+    // Only average listings within a reasonable mileage range of the subject vehicle
+    const subjectKm = parseInt(req.query.mileage) || 0;
 
-    const filteredAvg = validPrices.length
-      ? Math.round(validPrices.reduce((a, b) => a + b, 0) / validPrices.length)
-      : null;
+    function getListingsWithPriceAndKm(list) {
+      return list.filter(l => {
+        const price = parseFloat(l.listing_price);
+        const km = parseInt(l.listing_mileage);
+        return price > 5000 && km > 0;
+      });
+    }
 
-    const filteredLow = validPrices.length ? Math.round(Math.min(...validPrices)) : null;
-    const filteredHigh = validPrices.length ? Math.round(Math.max(...validPrices)) : null;
+    // KM rates by brand for extrapolation (mirrors frontend logic)
+    function getKmRateForMake(make) {
+      if (!make) return 0.10;
+      const m = make.toLowerCase();
+      if (['honda','acura','toyota','lexus','hyundai','mazda','kia','genesis','nissan','subaru','mitsubishi','infiniti'].some(b=>m.includes(b))) return 0.10;
+      if (['audi','bmw','mercedes','jaguar','land rover','porsche','maserati','volvo','alfa'].some(b=>m.includes(b))) return 0.25;
+      if (['ford','gmc','chevrolet','chevy','cadillac','ram','dodge','chrysler','lincoln','buick'].some(b=>m.includes(b))) return 0.17;
+      return 0.10;
+    }
+
+    function calcBandedAvg(list, subjectKm, bandKm) {
+      const inBand = list.filter(l => {
+        const km = parseInt(l.listing_mileage);
+        return Math.abs(km - subjectKm) <= bandKm;
+      });
+      if (!inBand.length) return null;
+      const prices = inBand.map(l => parseFloat(l.listing_price));
+      return {
+        avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
+        low: Math.round(Math.min(...prices)),
+        high: Math.round(Math.max(...prices)),
+        count: inBand.length,
+        band: bandKm
+      };
+    }
+
+    // Extrapolate price from nearest comparable using KM rate
+    function extrapolateFromNearest(list, subjectKm, make) {
+      if (!list.length) return null;
+      const rate = getKmRateForMake(make);
+      // Sort by mileage proximity to subject vehicle
+      const sorted = [...list].sort((a, b) => {
+        return Math.abs(parseInt(a.listing_mileage) - subjectKm) - Math.abs(parseInt(b.listing_mileage) - subjectKm);
+      });
+      // Use up to 3 nearest by mileage, extrapolate each, then average
+      const nearest = sorted.slice(0, 3);
+      const extrapolated = nearest.map(l => {
+        const listKm = parseInt(l.listing_mileage);
+        const listPrice = parseFloat(l.listing_price);
+        const kmDiff = subjectKm - listKm; // negative = subject has fewer km = worth more
+        const adjustment = Math.round(kmDiff * rate * -1); // flip sign: fewer km = add value
+        return {
+          adjustedPrice: Math.round(listPrice + adjustment),
+          originalPrice: listPrice,
+          listKm,
+          kmDiff,
+          adjustment
+        };
+      });
+      const adjustedPrices = extrapolated.map(e => e.adjustedPrice);
+      return {
+        avg: Math.round(adjustedPrices.reduce((a, b) => a + b, 0) / adjustedPrices.length),
+        low: Math.round(Math.min(...adjustedPrices)),
+        high: Math.round(Math.max(...adjustedPrices)),
+        count: nearest.length,
+        extrapolated,
+        band: null
+      };
+    }
+
+    const subjectMake = req.query.make || '';
+    const validListings = getListingsWithPriceAndKm(filtered);
+
+    // Try progressively wider mileage bands
+    let bandResult = null;
+    let bandLabel = '';
+    let wasExtrapolated = false;
+
+    if (subjectKm > 0) {
+      const tight = calcBandedAvg(validListings, subjectKm, 15000);
+      if (tight && tight.count >= 2) {
+        bandResult = tight;
+        bandLabel = `±15,000 km band (${tight.count} listings)`;
+      } else {
+        const medium = calcBandedAvg(validListings, subjectKm, 30000);
+        if (medium && medium.count >= 2) {
+          bandResult = medium;
+          bandLabel = `±30,000 km band (${medium.count} listings)`;
+        } else {
+          const wide = calcBandedAvg(validListings, subjectKm, 50000);
+          if (wide && wide.count >= 2) {
+            bandResult = wide;
+            bandLabel = `±50,000 km band (${wide.count} listings)`;
+          } else if (validListings.length > 0) {
+            // No band matched — extrapolate from nearest comparables using KM rate
+            const extResult = extrapolateFromNearest(validListings, subjectKm, subjectMake);
+            if (extResult) {
+              bandResult = extResult;
+              wasExtrapolated = true;
+              bandLabel = `Extrapolated from ${extResult.count} nearest listing(s) using $${getKmRateForMake(subjectMake)}/km rate — no close mileage matches found`;
+            }
+          }
+        }
+      }
+    } else {
+      // No mileage provided — use all valid listings
+      if (validListings.length > 0) {
+        const prices = validListings.map(l => parseFloat(l.listing_price));
+        bandResult = {
+          avg: Math.round(prices.reduce((a, b) => a + b, 0) / prices.length),
+          low: Math.round(Math.min(...prices)),
+          high: Math.round(Math.max(...prices)),
+          count: validListings.length,
+          band: null
+        };
+        bandLabel = 'All listings (no mileage provided)';
+      }
+    }
 
     // Return filtered listings with metadata
-    trimData.listings = filtered.slice(0, 15); // cap at 15 for display
+    trimData.listings = filtered.slice(0, 15);
     trimData._api_match_level = apiMatchLevel;
     trimData._vin_match_level = vinMatchLevel;
     trimData._vin_prefix_used = prefix8;
     trimData._total_before_filter = listings.length;
     trimData._total_after_filter = filtered.length;
-    trimData._filtered_avg = filteredAvg;
-    trimData._filtered_low = filteredLow;
-    trimData._filtered_high = filteredHigh;
+    trimData._filtered_avg = bandResult ? bandResult.avg : null;
+    trimData._filtered_low = bandResult ? bandResult.low : null;
+    trimData._filtered_high = bandResult ? bandResult.high : null;
+    trimData._filtered_count = bandResult ? bandResult.count : 0;
+    trimData._band_label = bandLabel;
+    trimData._was_extrapolated = wasExtrapolated;
 
     res.json(trimData);
   } catch (err) {
