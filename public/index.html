@@ -473,35 +473,125 @@ function renderListings(data){
     if(elMS) elMS.textContent = 'No close comps';
   }
 
-  // Calculate listing-based offer using median as retail base
+  // ── CONFIDENCE-BASED OFFER SELECTOR ─────────────────────────────────────────
+  // Decide which retail base to use based on data quality signals
+
+  const vinauditOffer = window._lastOffer || 0;
+  const vinauditRetail = window._lastRetailBase || 0;
+  const sampleCount = window._lastSampleCount || 0;
+  const make = window._lastMake || '';
+
+  // Calculate listing-based offer if we have a median
+  let listingOffer = null;
   if (filteredMedian && filteredMedian > 0) {
-    // Re-run appraisal logic using listing median as the retail base
     const MARKUP_LB=[[14000,4000],[15000,5000],[30000,6000],[40000,6500],[50000,7000],[60000,8000],[70000,9000],[85000,10000],[110000,12000],[150000,15000],[Infinity,null]];
     function getMarkupLB(p){for(const[max,amt]of MARKUP_LB)if(p<=max)return amt!==null?amt:p*0.10;return p*0.10;}
-    const listingMu = getMarkupLB(filteredMedian);
     const kmRateVal = window._lastKmRate || 0.10;
     const kmDelta = (window._lastMileage||0) - (window._lastVinAuditAvgKm||120000);
-    let listingOffer = filteredMedian - listingMu;
+    let lo = filteredMedian - getMarkupLB(filteredMedian);
     if (Math.abs(kmDelta) > 500) {
-      const kmAdj = Math.round(Math.abs(kmDelta) * kmRateVal);
-      listingOffer += kmDelta < 0 ? kmAdj : -kmAdj;
+      const adj = Math.round(Math.abs(kmDelta) * kmRateVal);
+      lo += kmDelta < 0 ? adj : -adj;
     }
-    listingOffer = Math.max(0, Math.round(listingOffer));
+    listingOffer = Math.max(0, Math.round(lo));
+    const elLO = document.getElementById('rListingOffer');
+    if(elLO) elLO.textContent = fmt(listingOffer);
+  }
 
-    const elLO = document.getElementById('rListingOffer'); if(elLO) elLO.textContent = fmt(listingOffer);
+  // ── SELECTOR LOGIC ──────────────────────────────────────────────────────────
+  const isTeslaVehicle = make.toLowerCase().includes('tesla');
+  const pctDiff = (vinauditRetail > 0 && filteredMedian)
+    ? Math.abs(filteredMedian - vinauditRetail) / vinauditRetail * 100
+    : 0;
+  const highVolume = sampleCount >= 100;
+  const listingCloseToVinaudit = pctDiff < 5;
+  const listingDiverges = pctDiff >= 8;
+  const listingAvailable = filteredMedian && filteredMedian > 0 && filteredCount >= 2;
 
-    // Compare the two offers
-    const vinauditOffer = window._lastOffer || 0;
-    const diff = listingOffer - vinauditOffer;
-    const compHtml = diff === 0
-      ? '<span style="color:#4ade80;">✓ Both methods agree</span>'
-      : `Listing-based: <strong style="color:#F0A500;">${fmt(listingOffer)}</strong><br>
-         VinAudit-based: <strong>${fmt(vinauditOffer)}</strong><br>
-         <span style="color:${Math.abs(diff)>3000?'#f87171':'#4ade80'};">Difference: ${diff>0?'+':''}${fmt(diff)}</span>
-         ${Math.abs(diff)>3000?'<br><span style="color:#fde68a;font-size:12px;">⚠ Large gap — review comps carefully</span>':''}`;
+  // Low data flags — apply to ANY vehicle, not just Tesla
+  const veryLowSamples = sampleCount < 20;
+  const noListingsNoData = !listingAvailable && sampleCount < 20;
 
-    document.getElementById('closestCompsTable').innerHTML = compHtml;
-    const elRow = document.getElementById('listingOfferRow'); if(elRow) elRow.classList.remove('hidden');
+  let selectedOffer, selectedBase, selectedMethod, methodReason, methodColor;
+
+  if (noListingsNoData) {
+    // No listings AND very few sales — not enough data for reliable offer
+    selectedOffer = vinauditOffer;
+    selectedBase = vinauditRetail;
+    selectedMethod = 'Manual Review';
+    methodReason = `Insufficient data — only ${sampleCount} sales and no nearby listings. Human review recommended.`;
+    methodColor = '#DC2626';
+  } else if (!listingAvailable) {
+    // No listings but reasonable sales data — use VinAudit
+    selectedOffer = vinauditOffer;
+    selectedBase = vinauditRetail;
+    selectedMethod = 'VinAudit';
+    methodReason = `No comparable listings found — using VinAudit (${sampleCount} sales)`;
+    methodColor = '#6B7A99';
+  } else if (highVolume && listingCloseToVinaudit) {
+    // High volume + listings agree — VinAudit is reliable
+    selectedOffer = vinauditOffer;
+    selectedBase = vinauditRetail;
+    selectedMethod = 'VinAudit';
+    methodReason = `High confidence — ${sampleCount} sales, listings within 5% of VinAudit`;
+    methodColor = '#16A34A';
+  } else if (listingDiverges && listingAvailable) {
+    // Listings and VinAudit disagree significantly — listings are more specific
+    selectedOffer = listingOffer;
+    selectedBase = filteredMedian;
+    selectedMethod = 'Listing-Based';
+    methodReason = `VinAudit and listings diverge ${pctDiff.toFixed(0)}% — using listing median (more specific to this vehicle)`;
+    methodColor = '#1355C1';
+  } else if (listingAvailable && !highVolume) {
+    // Low sample count — listings provide better signal
+    selectedOffer = listingOffer;
+    selectedBase = filteredMedian;
+    selectedMethod = 'Listing-Based';
+    methodReason = `Low VinAudit sample count (${sampleCount}) — using listing median for better accuracy`;
+    methodColor = '#1355C1';
+  } else {
+    // Default — use listing if available
+    selectedOffer = listingOffer || vinauditOffer;
+    selectedBase = filteredMedian || vinauditRetail;
+    selectedMethod = listingOffer ? 'Listing-Based' : 'VinAudit';
+    methodReason = listingOffer ? 'Listing median used — more current and vehicle-specific' : 'Using VinAudit';
+    methodColor = listingOffer ? '#1355C1' : '#6B7A99';
+  }
+
+  // ── UPDATE PRIMARY OFFER BOX ─────────────────────────────────────────────
+  // Update the main TradeLane Offer with the selected method's value
+  const mainOfferEl = document.getElementById('rOffer');
+  if (mainOfferEl && selectedOffer) {
+    mainOfferEl.textContent = fmt(selectedOffer);
+    // Update the offer subtitle
+    const offerSubEl = document.querySelector('#rOffer ~ .rs, .rc.hero .rs');
+  }
+
+  // Show method banner
+  const methodBanner = `
+    <div style="background:${methodColor}15;border:1px solid ${methodColor}40;border-radius:8px;padding:12px 14px;margin-bottom:4px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-family:'Sora',sans-serif;font-weight:700;font-size:13px;color:${methodColor};">
+          ${selectedMethod === 'Manual Review' ? '⚠' : selectedMethod === 'Listing-Based' ? '📋' : '📊'} ${selectedMethod}
+          ${selectedMethod === 'Manual Review' ? '' : `— ${fmt(selectedOffer)}`}
+        </span>
+        <span style="font-size:12px;color:#6B7A99;">${methodReason}</span>
+      </div>
+      ${listingOffer && vinauditOffer ? `
+        <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;flex-wrap:wrap;">
+          <span>📊 VinAudit: <strong>${fmt(vinauditOffer)}</strong> <span style="color:#6B7A99;">(retail ${fmt(vinauditRetail)})</span></span>
+          <span>📋 Listing: <strong>${fmt(listingOffer)}</strong> <span style="color:#6B7A99;">(median ${fmt(filteredMedian)})</span></span>
+          <span style="color:${Math.abs(pctDiff)>8?'#DC2626':'#16A34A'};">Retail gap: ${pctDiff.toFixed(1)}%</span>
+        </div>` : ''}
+    </div>`;
+
+  const elRow = document.getElementById('listingOfferRow');
+  if(elRow) {
+    elRow.classList.remove('hidden');
+    elRow.innerHTML = `<div style="margin-bottom:16px;">${methodBanner}</div>`;
+  }
+
+  if (filteredMedian && filteredMedian > 0) {
 
     // Show closest comps as a mini table
     if (closestComps.length > 0) {
@@ -615,8 +705,14 @@ async function runAppraisal(){
 
     const vehicleName=[year,make,model,trim].filter(Boolean).join(' ');
     const{offer,steps}=calcOffer({retail:base,retailSource,mileage,make,vehicle:vehicleName,vin,accident,color,vinAuditAvgKm});
-    // Store for listing-based offer calculation
-    window._lastOffer=offer;window._lastMileage=mileage;window._lastVinAuditAvgKm=vinAuditAvgKm;window._lastKmRate=kmRate(make);
+    // Store for listing-based offer calculation and confidence selector
+    window._lastOffer=offer;
+    window._lastMileage=mileage;
+    window._lastVinAuditAvgKm=vinAuditAvgKm;
+    window._lastKmRate=kmRate(make);
+    window._lastRetailBase=base;
+    window._lastSampleCount=parseInt(d._sample_count||d.count||0);
+    window._lastMake=make;
     const elLM = document.getElementById('rListingMedian');
     const elLMS = document.getElementById('rListingMedianSub');
     const elLOR = document.getElementById('listingOfferRow');
