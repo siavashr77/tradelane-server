@@ -508,54 +508,60 @@ function renderListings(data){
   const listingDiverges = pctDiff >= 8;
   const listingAvailable = filteredMedian && filteredMedian > 0 && filteredCount >= 2;
 
-  // Low data flags — apply to ANY vehicle, not just Tesla
+  // Low data flags
   const veryLowSamples = sampleCount < 20;
-  const noListingsNoData = !listingAvailable && sampleCount < 20;
+  const noListingsNoData = !listingAvailable && veryLowSamples;
+  const listingLower = filteredMedian && filteredMedian < vinauditRetail;
+  const listingHigher = filteredMedian && filteredMedian > vinauditRetail * 1.05;
+  const usedCount = data?._filtered_used_count || 0;
+  const hasGoodUsedComps = usedCount >= 2;
 
   let selectedOffer, selectedBase, selectedMethod, methodReason, methodColor;
 
   if (noListingsNoData) {
-    // No listings AND very few sales — not enough data for reliable offer
     selectedOffer = vinauditOffer;
     selectedBase = vinauditRetail;
     selectedMethod = 'Manual Review';
-    methodReason = `Insufficient data — only ${sampleCount} sales and no nearby listings. Human review recommended.`;
+    methodReason = `Insufficient data — only ${sampleCount} sales and no nearby listings`;
     methodColor = '#DC2626';
   } else if (!listingAvailable) {
-    // No listings but reasonable sales data — use VinAudit
     selectedOffer = vinauditOffer;
     selectedBase = vinauditRetail;
     selectedMethod = 'VinAudit';
     methodReason = `No comparable listings found — using VinAudit (${sampleCount} sales)`;
     methodColor = '#6B7A99';
-  } else if (highVolume && listingCloseToVinaudit) {
-    // High volume + listings agree — VinAudit is reliable
+  } else if (listingHigher && !hasGoodUsedComps) {
+    // Listing median higher than VinAudit — likely inflated by new car prices
     selectedOffer = vinauditOffer;
     selectedBase = vinauditRetail;
     selectedMethod = 'VinAudit';
-    methodReason = `High confidence — ${sampleCount} sales, listings within 5% of VinAudit`;
-    methodColor = '#16A34A';
-  } else if (listingDiverges && listingAvailable) {
-    // Listings and VinAudit disagree significantly — listings are more specific
+    methodReason = `Listing median (${fmt(filteredMedian)}) exceeds VinAudit — likely new cars inflating comps`;
+    methodColor = '#6B7A99';
+  } else if (listingLower && hasGoodUsedComps && pctDiff >= 5) {
+    // Used listings show lower retail than VinAudit — listing is more accurate
     selectedOffer = listingOffer;
     selectedBase = filteredMedian;
     selectedMethod = 'Listing-Based';
-    methodReason = `VinAudit and listings diverge ${pctDiff.toFixed(0)}% — using listing median (more specific to this vehicle)`;
+    methodReason = `${usedCount} used comps show lower retail than VinAudit (${pctDiff.toFixed(0)}% gap)`;
     methodColor = '#1355C1';
-  } else if (listingAvailable && !highVolume) {
-    // Low sample count — listings provide better signal
+  } else if (highVolume) {
+    selectedOffer = vinauditOffer;
+    selectedBase = vinauditRetail;
+    selectedMethod = 'VinAudit';
+    methodReason = `High confidence — ${sampleCount} sales`;
+    methodColor = '#16A34A';
+  } else if (listingLower && listingAvailable) {
     selectedOffer = listingOffer;
     selectedBase = filteredMedian;
     selectedMethod = 'Listing-Based';
-    methodReason = `Low VinAudit sample count (${sampleCount}) — using listing median for better accuracy`;
+    methodReason = `Listing median lower than VinAudit — using as more conservative base`;
     methodColor = '#1355C1';
   } else {
-    // Default — use listing if available
-    selectedOffer = listingOffer || vinauditOffer;
-    selectedBase = filteredMedian || vinauditRetail;
-    selectedMethod = listingOffer ? 'Listing-Based' : 'VinAudit';
-    methodReason = listingOffer ? 'Listing median used — more current and vehicle-specific' : 'Using VinAudit';
-    methodColor = listingOffer ? '#1355C1' : '#6B7A99';
+    selectedOffer = vinauditOffer;
+    selectedBase = vinauditRetail;
+    selectedMethod = 'VinAudit';
+    methodReason = `Default — VinAudit (${sampleCount} sales)`;
+    methodColor = '#6B7A99';
   }
 
   // ── UPDATE PRIMARY OFFER BOX ─────────────────────────────────────────────
